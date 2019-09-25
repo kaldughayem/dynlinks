@@ -1,4 +1,4 @@
-# SCION Dynamic Links Experimentation Tool
+# Dynamic Links: An Experimentation Automation Tool for SCION
 ## Description 
 Dynamic Links is an experimentation automation tool for SCION.
 It allows its users to selectivly fail and/or deteriorate links on local containerized topology which is connected to SCIONLab.
