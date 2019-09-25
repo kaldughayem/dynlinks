@@ -1,0 +1,50 @@
+# logs an temporary files
+logs/
+cache/
+
+# Operating System Files
+*.DS_Store
+Thumbs.db
+*.sw?
+.#*
+*#
+*~
+*.sublime-*
+
+# Build Artifacts
+bin/
+out/
+
+# Eclipse Project Files
+.classpath
+.project
+.settings/
+
+# IntelliJ IDEA Files
+*.iml
+*.ipr
+*.iws
+*.idea
+codestyles/
+
+# LaTeX temporary files
+*.aux
+*.toc
+*.blg
+*.bbl
+*.thm
+latex/thesis.log
+*.ps
+
+# Latexmk
+*.fdb_latexmk
+
+# SyncTeX
+*.synctex.gz
+
+# LaTeX Beamer
+*.snm
+*.vrb
+*.nav
+*.out
+
