@@ -5,7 +5,7 @@ It allows its users to selectivly fail and/or deteriorate links on local contain
 
 It deploys a containerized SCION topology in the user's machine that is connected to SCIONLab using the `topo` subcommand.
 Then the user is able to modify any of the links in the topology by using the `exp` subcommand.
-It provides different link deterioration and revocation options (described in detail in [Properties]()). 
+It provides different link deterioration and revocation options (described in detail in the properties section below). 
 
 It uses the SCION [docker script](https://github.com/scionproto/scion/tree/master/docker) to deploy the containerized topology.
  
