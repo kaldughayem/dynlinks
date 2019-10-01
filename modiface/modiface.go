@@ -2,13 +2,17 @@
 // The package would first initialize a SCION connection to retrieve the ifStates from the beacon server.
 // Then if the revoke metric is set revokes the interface with the given interface ID by setting its revoked flag to
 // true, and creates a Revoker to revoke it. If the token revocation method was chosen, then modiface would first
-// initialize a trustStore to create a sign from the AS keys.
+// initialize a trustStore to create a Sign from the AS keys.
 //
 // Otherwise, when the revoke metric is not set, it would apply the Properties passed by the caller on the given link.
 package modiface
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
+	"sync"
+
 	"github.com/kaldughayem/dynlinks/conf"
 	"github.com/kaldughayem/dynlinks/utils"
 	"github.com/scionproto/scion/go/lib/addr"
@@ -17,9 +21,6 @@ import (
 	"github.com/scionproto/scion/go/lib/log"
 	"github.com/scionproto/scion/go/lib/snet"
 	"github.com/scionproto/scion/go/lib/topology"
-	"os"
-	"path/filepath"
-	"sync"
 )
 
 var (
@@ -210,11 +211,9 @@ func (m *Modiface) setup() error {
 		return common.NewBasicError("Interface not found in topology.json file", nil, "topo",
 			m.cfg.topologyPath)
 	}
-
 	// initialize the sciond path and connection timeout if not specified in General file
-	env.InitSciondClient(&m.cfg.Sciond)
+	m.cfg.Sciond.InitDefaults()
 
-	//m.log.Trace("Setup finished")
 	return nil
 }
 

@@ -3,15 +3,6 @@ package collector
 import (
 	"context"
 	"fmt"
-	"github.com/docker/docker/api/types"
-	"github.com/docker/docker/client"
-	"github.com/docker/docker/pkg/stdcopy"
-	"github.com/kaldughayem/dynlinks/conf"
-	"github.com/kaldughayem/dynlinks/utils"
-	"github.com/scionproto/scion/go/lib/common"
-	"github.com/scionproto/scion/go/lib/log"
-	"github.com/scionproto/scion/go/lib/snet"
-	"github.com/scionproto/scion/go/proto"
 	"io"
 	"os"
 	"os/exec"
@@ -21,10 +12,19 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/docker/docker/api/types"
+	"github.com/docker/docker/client"
+	"github.com/docker/docker/pkg/stdcopy"
+	"github.com/kaldughayem/dynlinks/conf"
+	"github.com/kaldughayem/dynlinks/utils"
+	"github.com/scionproto/scion/go/lib/common"
+	"github.com/scionproto/scion/go/lib/log"
+	"github.com/scionproto/scion/go/lib/snet"
+	"github.com/scionproto/scion/go/proto"
 )
 
 var (
-	cli      *client.Client
 	stopLock sync.Mutex
 )
 
@@ -68,6 +68,8 @@ type Collector struct {
 	// stop is a flag which signals all running routines started by a collector instance to exit
 	stop bool
 	wg   sync.WaitGroup
+	// The docker client
+	cli *client.Client
 }
 
 // NewCollector creates a new logs collector instance.
@@ -125,15 +127,7 @@ func (c *Collector) Run() {
 
 	c.wg.Wait()
 
-	if c.measurements.Bandwidth {
-		// TODO check first if BR is hogging CPU because of bwtester
-		out, err := exec.Command("pkill", "-SIGTERM", "border").Output()
-		if err != nil {
-			log.Error("Sending SIGTERM to Border router", "err", err)
-		}
-		log.Trace("Killed BR with SIGTERM", "output", string(out))
-	}
-
+	log.Trace("Running aggregator...")
 	// Run the aggregator
 	AnalyzeResults(c.cfg.LogsPath)
 }
@@ -151,7 +145,7 @@ func (c *Collector) setup() error {
 	var err error
 
 	// Create a new docker API client with version 1.39 (maximum supported version)
-	cli, err = client.NewClientWithOpts(client.WithVersion("1.39"))
+	c.cli, err = client.NewClientWithOpts(client.WithVersion("1.39"))
 	if err != nil {
 		return common.NewBasicError("Getting docker API client", err)
 	}
@@ -190,12 +184,12 @@ func (c *Collector) startBwServers() error {
 
 		cntName := strings.Replace(asID, ":", "_", -1)
 
-		idResponse, err := cli.ContainerExecCreate(context.Background(), cntName, config)
+		idResponse, err := c.cli.ContainerExecCreate(context.Background(), cntName, config)
 		if err != nil {
 			return common.NewBasicError("Creating bwtestserver command", err, "container", cntName)
 		}
 
-		err = cli.ContainerExecStart(context.Background(), idResponse.ID, types.ExecStartCheck{
+		err = c.cli.ContainerExecStart(context.Background(), idResponse.ID, types.ExecStartCheck{
 			Detach: true,
 			Tty:    false,
 		})
@@ -225,24 +219,27 @@ func (c *Collector) measureLatency() error {
 		dstAddress := fmt.Sprintf("%s,[127.0.0.1]", link.ASB)
 		args := []string{"echo", "-local", srcAddress, "-remote", dstAddress, "-refresh"}
 
-		go func(args []string, AS string, f os.File) {
+		c.wg.Add(1)
+		go func(args []string, AS string, f os.File, wg *sync.WaitGroup) {
 			defer f.Close()
 			for !c.getStop() {
 				if c.cfg.ASInfos[AS].AP {
 					if err := runCmdLocally(scmpPath, args, &f); err != nil {
-						log.Error("Running latency command locally", "AS", AS)
+						// The error is logged in the file
+						//log.Error("Running latency command locally", "AS", AS)
 						time.Sleep(time.Second)
 					}
 				} else {
 					containerName := strings.Replace(AS, ":", "_", -1)
 					cmd := append([]string{scmpPath}, args...)
-					if err := runCmdInContainer(containerName, cmd, &f); err != nil {
-						log.Error("Getting latency from container", "AS", AS)
+					if err := runCmdInContainer(c.cli, containerName, cmd, &f); err != nil {
+						log.Error("Running latency command on container", "AS", AS)
 						time.Sleep(time.Second)
 					}
 				}
 			}
-		}(args, link.ASA, *f)
+			wg.Done()
+		}(args, link.ASA, *f, &c.wg)
 	}
 
 	time.Sleep(time.Second)
@@ -302,7 +299,7 @@ func (c *Collector) singlePathMeasurement(srcIA string, info conf.ASInfo, baseAr
 			} else { // run the command on container
 				cmd := append([]string{showPaths}, args...)
 				containerName := strings.Replace(srcIA, ":", "_", -1)
-				if err = runCmdInContainer(containerName, cmd, &f); err != nil {
+				if err = runCmdInContainer(c.cli, containerName, cmd, &f); err != nil {
 					log.Error("Getting paths from container", "dst", dstIA)
 				}
 			}
@@ -433,7 +430,7 @@ func (c *Collector) singleBandwidthMeasurement(f os.File, link conf.Link, wg *sy
 			cmd := append([]string{"/home/scion/go/bin/bwtestclient"}, args...)
 			containerName := strings.Replace(link.ASA, ":", "_", -1)
 
-			if err := runCmdInContainer(containerName, cmd, &f); err != nil {
+			if err := runCmdInContainer(c.cli, containerName, cmd, &f); err != nil {
 				log.Error("Running bwtestclient in docker", "container", containerName, "dst",
 					dstAddress)
 			}
@@ -466,6 +463,15 @@ func (c *Collector) killRunningProcesses() {
 		if err := exec.Command("pkill", p).Run(); err != nil {
 			log.Error("killing process", "process name", p, "err", err)
 		}
+	}
+
+	if c.measurements.Bandwidth {
+		// TODO check first if BR is still hogging the CPU because of bwtester
+		out, err := exec.Command("pkill", "-SIGTERM", "border").Output()
+		if err != nil {
+			log.Error("Sending SIGTERM to Border router", "err", err)
+		}
+		log.Trace("Killed BR with SIGTERM", "output", string(out))
 	}
 }
 
@@ -512,7 +518,6 @@ func (c *Collector) measurePathSwitching() {
 		//args := []string{"-dstIA", dstIA, "-srcIA", c.cfg.LocalAddress.IA.String(), "-refresh", "-p", "-local", srcAddress}
 		// do not check the path health because we just want to query for the paths.
 		args := []string{"-dstIA", dstIA, "-srcIA", c.cfg.LocalAddress.IA.String(), "-refresh"}
-		// #nosec
 		_ = runCmdLocally(scmpPath, args, f)
 		time.Sleep(time.Millisecond * 500)
 	}
@@ -521,7 +526,7 @@ func (c *Collector) measurePathSwitching() {
 }
 
 // runCmdInContainer runs a command inside a docker container.
-func runCmdInContainer(containerName string, cmd []string, writer io.Writer) error {
+func runCmdInContainer(cli *client.Client, containerName string, cmd []string, writer io.Writer) error {
 	execConfig := types.ExecConfig{
 		User:         "scion",
 		AttachStderr: true,
@@ -601,7 +606,7 @@ func findMultipathAS(asInfos conf.ASInfos, localAddress *snet.Addr) string {
 		}
 
 		for _, rawPath := range availablePaths {
-			path := regexp.MustCompile(pathRegex).FindString(rawPath)
+			path := regexp.MustCompile(PathRegex).FindString(rawPath)
 			path = strings.Trim(path, "[]")
 			if utils.StringInSlice(path, paths) {
 				continue

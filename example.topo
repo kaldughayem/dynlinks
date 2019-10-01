@@ -8,14 +8,6 @@ subnet: "172.17.0.0/16"
 # MTU for the new network to be created (default network is not affected)
 MTU: "9000"
 
-defaults:
-  zookeepers:
-    1:
-      # your host's IP address and zookeeper port. If subnet is provided, IP needs to be in the subnet for
-      # containers to be able to connect to it
-      addr: 172.17.0.1
-      port: 2181
-
 ASes:
   # AP: is an abbreviation for attachment point, this means that this machine is the one connected to the SCION
   # network and is the attachment point for all other ASes to be created (there must be only one attachment point)

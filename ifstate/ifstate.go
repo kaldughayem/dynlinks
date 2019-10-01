@@ -9,9 +9,10 @@ import (
 	"github.com/scionproto/scion/go/lib/common"
 	"github.com/scionproto/scion/go/lib/ctrl"
 	"github.com/scionproto/scion/go/lib/ctrl/path_mgmt"
-	"github.com/scionproto/scion/go/lib/infra/modules/itopo"
+	"github.com/scionproto/scion/go/lib/infra"
 	"github.com/scionproto/scion/go/lib/log"
 	"github.com/scionproto/scion/go/lib/snet"
+	"github.com/scionproto/scion/go/lib/topology"
 	"github.com/scionproto/scion/go/proto"
 	"time"
 )
@@ -89,8 +90,7 @@ func process(ifStates *path_mgmt.IFStateInfos) IfStates {
 
 // BuildIFStatesUpdate builds an IFStateInfos update message for the revoked interfaces only
 // based on the passed interface states.
-func BuildIFStatesUpdate(states IfStates) (*path_mgmt.IFStateInfos, error) {
-	topo := itopo.GetCurrentTopology()
+func BuildIFStatesUpdate(states IfStates, topo *topology.Topo) (*path_mgmt.IFStateInfos, error) {
 	stateInfos := &path_mgmt.IFStateInfos{}
 	for ifid := range topo.IFInfoMap {
 		s, ok := states[ifid]
@@ -101,7 +101,7 @@ func BuildIFStatesUpdate(states IfStates) (*path_mgmt.IFStateInfos, error) {
 			continue
 		}
 		newInfo := &path_mgmt.IFStateInfo{
-			IfID:     uint64(s.IfID),
+			IfID:     s.IfID,
 			Active:   s.Active,
 			SRevInfo: s.SRevInfo,
 		}
@@ -112,10 +112,10 @@ func BuildIFStatesUpdate(states IfStates) (*path_mgmt.IFStateInfos, error) {
 
 // GetIFStates is  the main function in the module, generates and sends IfState requests to the beacon server, then
 // processes the response to update the local IfState information.
-func GetIFStates(conn snet.Conn, LocalAddress *snet.Addr, dstAS addr.IA) (IfStates, error) {
+func GetIFStates(conn snet.Conn, LocalAddress *snet.Addr, dstAS addr.IA, topo *topology.Topo) (IfStates, error) {
 	b := make(common.RawBytes, maxBufSize)
 
-	if err := sendIFStateReq(conn, LocalAddress, dstAS); err != nil {
+	if err := sendIFStateReq(conn, LocalAddress, dstAS, topo); err != nil {
 		return nil, common.NewBasicError("Sending IfState request", err)
 	}
 
@@ -140,26 +140,27 @@ func GetIFStates(conn snet.Conn, LocalAddress *snet.Addr, dstAS addr.IA) (IfStat
 }
 
 // sendIFStateReq generates an Interface State request packet to the beacon service in the currently active AS .
-func sendIFStateReq(snetConn snet.Conn, LocalAddress *snet.Addr, dstAS addr.IA) error {
-	dst, err := utils.SetupSVCAddress(addr.SvcBS, LocalAddress, dstAS)
+func sendIFStateReq(snetConn snet.Conn, LocalAddress *snet.Addr, dstAS addr.IA, topo *topology.Topo) error {
+	dst, err := utils.SetupSVCAddress(addr.SvcBS, LocalAddress, dstAS, topo)
 	if err != nil {
 		return common.NewBasicError("Setting up address", err)
 	}
-	err = utils.SendPathMgmtMsg(&path_mgmt.IFStateReq{}, snetConn, dst, ctrl.NullSigner)
+	err = utils.SendPathMgmtMsg(&path_mgmt.IFStateReq{}, snetConn, dst, infra.NullSigner)
 	if err != nil {
 		return common.NewBasicError("Sending IFStateReq", err)
 	}
 	return nil
 }
 
-// processCtrlFromRaw processes the path management scion ctrl payload from raw bytes, returns an error if the payload is not of type
-// path_mgmt.Pld
+// processCtrlFromRaw processes the path management scion ctrl payload from raw bytes, returns
+// an error if the payload is not of type path_mgmt.Pld
 func processCtrlFromRaw(b common.RawBytes) (IfStates, error) {
 	scPld, err := ctrl.NewSignedPldFromRaw(b)
 	if err != nil {
 		return nil, common.NewBasicError("Parsing signed ctrl pld", nil, "err", err)
 	}
-	cPld, err := scPld.Pld()
+
+	cPld, err := scPld.UnsafePld()
 	if err != nil {
 		return nil, common.NewBasicError("Getting ctrl pld", nil, "err", err)
 	}

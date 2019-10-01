@@ -265,7 +265,7 @@ func scionBuilt(cl *client.Client, containerName string) bool {
 
 //generateTopologyFiles generates the new topology files based on the topology configuration passed
 func generateTopologyFiles(topoConfig *conf.TopoConfig) error {
-	if err := loadTopologies(topoConfig.ASes, topoConfig.Defaults.Zookeepers); err != nil {
+	if err := loadTopologies(topoConfig.ASes); err != nil {
 		return err
 	}
 
@@ -514,7 +514,7 @@ func portUsed(port int, br *topology.RawBRInfo) bool {
 }
 
 // loadTopologies loads the topology files for each AS from its config dir into a RawTopo structure.
-func loadTopologies(asMap conf.ASMap, zookeepers conf.Zookeepers) error {
+func loadTopologies(asMap conf.ASMap) error {
 	var err error
 	for _, info := range asMap {
 		var topologyFiles []string
@@ -535,15 +535,6 @@ func loadTopologies(asMap conf.ASMap, zookeepers conf.Zookeepers) error {
 		info.Topo, err = topology.LoadRawFromFile(topologyFiles[0])
 		if err != nil {
 			return common.NewBasicError("Loading topology file", err)
-		}
-
-		// change zookeeper entry
-		info.Topo.ZookeeperService = map[int]*topology.RawAddrPort{}
-		for num, zookeeper := range zookeepers {
-			info.Topo.ZookeeperService[num] = &topology.RawAddrPort{
-				Addr:   zookeeper.Addr,
-				L4Port: zookeeper.Port,
-			}
 		}
 
 		if info.Info.AP {

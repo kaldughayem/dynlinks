@@ -1,8 +1,17 @@
 package modiface
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"math/rand"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"sync"
+	"time"
+
 	"github.com/kaldughayem/dynlinks/ifstate"
 	"github.com/kaldughayem/dynlinks/utils"
 	"github.com/scionproto/scion/go/lib/addr"
@@ -10,7 +19,7 @@ import (
 	"github.com/scionproto/scion/go/lib/ctrl"
 	"github.com/scionproto/scion/go/lib/ctrl/path_mgmt"
 	"github.com/scionproto/scion/go/lib/env"
-	"github.com/scionproto/scion/go/lib/infra/modules/itopo"
+	"github.com/scionproto/scion/go/lib/infra"
 	"github.com/scionproto/scion/go/lib/infra/modules/trust"
 	"github.com/scionproto/scion/go/lib/infra/modules/trust/trustdb"
 	"github.com/scionproto/scion/go/lib/keyconf"
@@ -21,13 +30,6 @@ import (
 	"github.com/scionproto/scion/go/lib/truststorage"
 	"github.com/scionproto/scion/go/lib/util"
 	"github.com/scionproto/scion/go/proto"
-	"math/rand"
-	"os"
-	"os/exec"
-	"path/filepath"
-	"strings"
-	"sync"
-	"time"
 )
 
 // RevocationType to apply to the interface
@@ -48,7 +50,6 @@ const (
 const DefaultRevOverlap = path_mgmt.MinRevTTL
 
 var (
-	wg sync.WaitGroup
 	// topoLock is a lock for editing the topology file
 	topoLock sync.Mutex
 )
@@ -72,8 +73,9 @@ var (
 type Revoker struct {
 	// General is used to retrieve the local address and the signing keys if token revocation method is chosen
 	cfg *Config
-	// sign to sign the revocation info for an interface when that method is chosen
-	sign *proto.SignS
+	// Sign to sign the revocation info for an interface when that method is chosen
+	//Sign *proto.SignS
+	Sign infra.Signer
 	// states are the Interface states used with the token method
 	states   ifstate.IfStates
 	snetConn snet.Conn
@@ -102,10 +104,11 @@ type Revoker struct {
 	timerChan chan struct{}
 	// lock for the stop flag
 	stopLock sync.Mutex
+	wg       sync.WaitGroup
 	log      log.Logger
 }
 
-// NewRevoker creates a new revoker object
+// NewRevoker creates a new revoker object.
 func NewRevoker(config *Config) *Revoker {
 	r := &Revoker{
 		cfg:         config,
@@ -117,11 +120,12 @@ func NewRevoker(config *Config) *Revoker {
 	return r
 }
 
-// Run is the main processing loop for the revoker. Then depending on the revocation method revoke that interface
-// to stop all incoming and outgoing communication.
+// Run is the main processing loop for the revoker. Then depending on the
+// revocation method revoke that interface to stop all incoming and outgoing
+// communication.
 func (r *Revoker) Run() {
 	var err error
-	wg.Add(1)
+	r.wg.Add(1)
 
 	r.timerChan = make(chan struct{})
 	go func() {
@@ -129,7 +133,7 @@ func (r *Revoker) Run() {
 		r.stopLock.Lock()
 		r.stop = true
 		r.stopLock.Unlock()
-		wg.Done()
+		r.wg.Done()
 	}()
 
 	// Setup the logger for the revoker
@@ -196,8 +200,8 @@ func (r *Revoker) simpleRevocationProcess(revocationFunction func() error) {
 
 			time.Sleep(r.period)
 		} else {
-			// Wait for user interrupt to revert changes
-			wg.Wait()
+			// Wait for exit signal to revert changes
+			r.wg.Wait()
 		}
 	}
 }
@@ -205,7 +209,7 @@ func (r *Revoker) simpleRevocationProcess(revocationFunction func() error) {
 // Revoke interface by continuously sending PathMgmt messages to local Border
 // Routers and Path Servers (IfState update message with signed revocation info).
 //
-// It would perform setup of the sign and the snetConn to get interface states
+// It would perform setup of the Sign and the snetConn to get interface states
 // before starting to send the IfState updates with the revocation info.
 //
 // It is different from the simple revocation period in that it uses a timer
@@ -226,7 +230,7 @@ func (r *Revoker) tokenRevocation() error {
 	}
 	intf.Revoked = true
 
-	pathServer, err := utils.SetupSVCAddress(addr.SvcPS, r.cfg.LocalAddr, r.cfg.ActiveAS)
+	pathServer, err := utils.SetupSVCAddress(addr.SvcPS, r.cfg.LocalAddr, r.cfg.ActiveAS, r.cfg.topology)
 	if err != nil {
 		return common.NewBasicError("Setting up path server address", err)
 	}
@@ -296,7 +300,7 @@ func (r *Revoker) sendIfStateUpdates(localPathServer, localBorderRouter *snet.Ad
 
 	for _, info := range r.cfg.topology.IFInfoMap {
 		if info.LinkType == proto.LinkType_parent {
-			parentPathServer, err := utils.SetupSVCAddress(addr.SvcPS, r.cfg.LocalAddr, info.ISD_AS)
+			parentPathServer, err := utils.SetupSVCAddress(addr.SvcPS, r.cfg.LocalAddr, info.ISD_AS, r.cfg.topology)
 			if err != nil {
 				r.log.Error("Setting up AP (host) Path server address", "err", err)
 				return
@@ -326,19 +330,7 @@ func (r *Revoker) buildSignedRev() (*path_mgmt.SignedRevInfo, error) {
 		RawTTL: uint32(path_mgmt.MinRevTTL.Seconds() * 2),
 	}
 
-	// Sign the revocation info
-	r.sign.Timestamp = util.TimeToSecs(time.Now())
-	raw, err := revInfo.Pack()
-	if err != nil {
-		return nil, err
-	}
-
-	r.sign.Signature, err = r.sign.Sign(r.keyConf.SignKey, raw)
-	if err != nil {
-		return nil, err
-	}
-
-	return path_mgmt.NewSignedRevInfo(revInfo, r.sign)
+	return path_mgmt.NewSignedRevInfo(revInfo, r.Sign)
 }
 
 // hasValidRevocation check if the interface has a valid signed revocation information
@@ -371,7 +363,7 @@ func (r *Revoker) issueRevocation(intf *ifstate.IfState) error {
 
 // sendIfStates sends ifStateUpdate messages to the dstAddress
 func (r *Revoker) sendIfStates(dstAddress *snet.Addr, states ifstate.IfStates) error {
-	stateInfos, err := ifstate.BuildIFStatesUpdate(states)
+	stateInfos, err := ifstate.BuildIFStatesUpdate(states, r.cfg.topology)
 	if err != nil {
 		return common.NewBasicError("Building IFState Updates", err)
 
@@ -383,7 +375,7 @@ func (r *Revoker) sendIfStates(dstAddress *snet.Addr, states ifstate.IfStates) e
 
 	}
 
-	scpld, err := cpld.SignedPld(ctrl.NullSigner)
+	scpld, err := cpld.SignedPld(infra.NullSigner)
 	if err != nil {
 		return common.NewBasicError("Generating IFState Update signed Ctrl payload", err)
 	}
@@ -408,23 +400,19 @@ func (r *Revoker) modifyTopo() error {
 	// Need the Border router ID/name which belongs to that interface to delete it from there in the topology struct
 	brID := r.cfg.topology.IFInfoMap[r.cfg.IFID].BRName
 	// Get the BR name that has that interface, and modify it's topology
-	file := filepath.Join(r.cfg.topology.IFInfoMap[r.cfg.IFID].BRName, env.DefaultTopologyPath)
-	dirs := utils.FindFile(file, filepath.Dir(r.cfg.configDir))
-	for _, dir := range dirs {
-		r.topoIfaceBackUp, err = deleteInterfaceFromTopo(brID, dir, r.cfg.IFID)
-		if err != nil {
-			return common.NewBasicError("Modifying border router topology", err)
-		}
+	file := filepath.Join(brID, env.DefaultTopologyPath)
+	topoPath := filepath.Join(filepath.Dir(r.cfg.configDir), file)
+	r.topoIfaceBackUp, err = deleteInterfaceFromTopo(brID, topoPath, r.cfg.IFID)
+	if err != nil {
+		return common.NewBasicError("Modifying border router topology", err)
 	}
 
 	for _, bs := range r.cfg.topology.BSNames {
 		file = filepath.Join(bs, env.DefaultTopologyPath)
-		dirs = utils.FindFile(file, filepath.Dir(r.cfg.configDir))
-		for _, dir := range dirs {
-			r.topoIfaceBackUp, err = deleteInterfaceFromTopo(brID, dir, r.cfg.IFID)
-			if err != nil {
-				return common.NewBasicError("Modifying beacon service topology", err)
-			}
+		topoPath := filepath.Join(filepath.Dir(r.cfg.configDir), file)
+		_, err = deleteInterfaceFromTopo(brID, topoPath, r.cfg.IFID)
+		if err != nil {
+			return common.NewBasicError("Modifying beacon service topology", err)
 		}
 	}
 	// Reloads configuration on all of the AS's beacon services, and the modified border router
@@ -514,23 +502,17 @@ func (r *Revoker) revertTopoChanges() error {
 	// Need the Border router ID/name which belongs to that interface to
 	// add it to the topology
 	brID := r.cfg.topology.IFInfoMap[r.cfg.IFID].BRName
-	// Get the BR name that has that interface, and modify it's topology
-	file := filepath.Join(r.cfg.topology.IFInfoMap[r.cfg.IFID].BRName, env.DefaultTopologyPath)
-	dirs := utils.FindFile(file, filepath.Dir(r.cfg.configDir))
-	for _, dir := range dirs {
-		if err := addInterfaceToTopo(brID, dir, r.cfg.IFID, &r.topoIfaceBackUp); err != nil {
-			return common.NewBasicError("Adding interface to border router topology file", err)
-		}
+	file := filepath.Join(brID, env.DefaultTopologyPath)
+	topoPath := filepath.Join(filepath.Dir(r.cfg.configDir), file)
+	if err = addInterfaceToTopo(brID, topoPath, r.cfg.IFID, &r.topoIfaceBackUp); err != nil {
+		return common.NewBasicError("Adding interface to border router topology file", err)
 	}
-
 	// Then add it to all BSes topology files
 	for _, bs := range r.cfg.topology.BSNames {
 		file := filepath.Join(bs, env.DefaultTopologyPath)
-		dirs := utils.FindFile(file, filepath.Dir(r.cfg.configDir))
-		for _, dir := range dirs {
-			if err = addInterfaceToTopo(brID, dir, r.cfg.IFID, &r.topoIfaceBackUp); err != nil {
-				return common.NewBasicError("Adding interface to beacon service topology", err)
-			}
+		topoPath := filepath.Join(filepath.Dir(r.cfg.configDir), file)
+		if err = addInterfaceToTopo(brID, topoPath, r.cfg.IFID, &r.topoIfaceBackUp); err != nil {
+			return common.NewBasicError("Adding interface to beacon server topology file", err)
 		}
 	}
 	// Reload configuration on all of the AS's beacon services, and the modified border router
@@ -542,14 +524,14 @@ func (r *Revoker) revertTopoChanges() error {
 		":", "_", -1))
 	_, err = exec.Command("pkill", "-SIGHUP", "-f", bsProcessName).Output()
 	if err != nil {
-		return common.NewBasicError("Sending SIGHUP to border routers", err)
+		return common.NewBasicError("Sending SIGHUP to beacon servers", err)
 	}
 
 	return nil
 }
 
 // addInterfaceToTopo adds the interface iface with ID ifid to
-// the border router with ID brID topology in topoPath.
+// the border router with ID brID in the topology in topoPath.
 func addInterfaceToTopo(brID, topoPath string, ifid common.IFIDType, iface *topology.RawBRIntf) error {
 	topoLock.Lock()
 	topo, err := topology.LoadRawFromFile(topoPath)
@@ -581,21 +563,38 @@ func (r *Revoker) setupTokenRevocation() error {
 	}
 
 	if err = r.initTrustStore(); err != nil {
-		return common.NewBasicError("Unable to initialize trust store", err)
+		return err
 	}
-	// need to set the topology like this in order to get the signer
-	itopo.SetCurrentTopology(r.cfg.topology)
-	// Create new sign proto.SignS
-	r.sign, err = trust.CreateSign(r.cfg.ActiveAS, r.store)
+
+	r.Sign, err = r.createSigner(r.cfg.topology)
 	if err != nil {
-		return common.NewBasicError("Failed to create sign for revoker", err)
+		return common.NewBasicError("Failed to create signer for revoker", err)
 	}
 	// interfaces and their states from the local Beacon server
-	r.states, err = ifstate.GetIFStates(r.snetConn, r.cfg.LocalAddr, r.cfg.ActiveAS)
+	r.states, err = ifstate.GetIFStates(r.snetConn, r.cfg.LocalAddr, r.cfg.ActiveAS, r.cfg.topology)
 	if err != nil {
 		return common.NewBasicError("Getting IfStates", err)
 	}
 	return nil
+}
+
+func (r *Revoker) createSigner(topo *topology.Topo) (infra.Signer, error) {
+	dir := filepath.Join(r.cfg.configDir, "keys")
+	cfg, err := keyconf.Load(dir, false, false, false, false)
+	if err != nil {
+		return nil, common.NewBasicError("Unable to load key config", err)
+	}
+	ctx, cancelF := context.WithTimeout(context.Background(), time.Second)
+	defer cancelF()
+	meta, err := trust.CreateSignMeta(ctx, topo.ISD_AS, r.trustDB)
+	if err != nil {
+		return nil, common.NewBasicError("Unable to create sign meta", err)
+	}
+	signer, err := trust.NewBasicSigner(cfg.SignKey, meta)
+	if err != nil {
+		return nil, common.NewBasicError("Unable to create signer", err)
+	}
+	return signer, nil
 }
 
 // initTrustStore initializes the configuration by loading the keys and initializing the Trust store.
@@ -606,23 +605,21 @@ func (r *Revoker) initTrustStore() error {
 		return common.NewBasicError("Unable to load keys", err)
 	}
 
-	r.trustDBConf.Backend = "sqlite"
-	r.trustDBConf.Connection = "cache/" + r.cfg.ID + ".trust.db"
+	connectionKey := filepath.Join("cache", fmt.Sprintf("%s.trust.db", r.cfg.ID))
+	r.trustDBConf = map[string]string{truststorage.ConnectionKey: connectionKey}
+	r.trustDBConf.InitDefaults()
 
 	if r.trustDB, err = r.trustDBConf.New(); err != nil {
 		return common.NewBasicError("Unable to initialize trustDB", err)
 	}
 
 	trustConf := &trust.Config{
-		// FIXME if set to false it fails, true should be fo CS only
+		// FIXME if set to false it fails, true should be for infra services only
 		MustHaveLocalChain: true,
-		ServiceType:        proto.ServiceType_sig,
+		ServiceType:        proto.ServiceType_unset,
 	}
 
-	r.store, err = trust.NewStore(r.trustDB, r.cfg.topology.ISD_AS, trustConf, log.Root())
-	if err != nil {
-		return common.NewBasicError("Unable to initialize trust store", err)
-	}
+	r.store = trust.NewStore(r.trustDB, r.cfg.topology.ISD_AS, *trustConf, log.Root())
 	err = r.store.LoadAuthoritativeTRC(filepath.Join(r.cfg.configDir, "certs"))
 	if err != nil {
 		return common.NewBasicError("Unable to load local TRC", err)
@@ -644,7 +641,8 @@ func (r *Revoker) initConn() error {
 
 	if snet.DefNetwork == nil {
 		// Initialize default SCION networking context
-		if err = snet.Init(r.cfg.LocalAddr.IA, r.cfg.Sciond.Path, r.cfg.Dispatcher); err != nil {
+		if err = snet.Init(r.cfg.LocalAddr.IA, r.cfg.Sciond.Path,
+			reliable.NewDispatcherService(r.cfg.Dispatcher)); err != nil {
 			return err
 		}
 	}
