@@ -12,23 +12,8 @@ type TopoConfig struct {
 	GenDir      string `yaml:"gen-dir"`
 	NetworkName string `yaml:"network-name"`
 	Subnet      string
-	Defaults    defaults
 	ASes        ASMap `yaml:"ASes"`
 	Links       []TopoLink
-}
-
-type defaults struct {
-	Zookeepers Zookeepers
-}
-
-// Zookeepers is a mpa of Zookeeper instances
-type Zookeepers map[int]Zookeeper
-
-// Zookeeper holds the port and address of the zookeeper instance
-// to connect all containers and host to.
-type Zookeeper struct {
-	Addr string
-	Port int
 }
 
 // ASMap is a map of AS information

@@ -5,21 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/docker/docker/client"
-	"github.com/kaldughayem/dynlinks/conf"
-	"github.com/scionproto/scion/go/lib/addr"
-	"github.com/scionproto/scion/go/lib/common"
-	"github.com/scionproto/scion/go/lib/ctrl"
-	"github.com/scionproto/scion/go/lib/infra/modules/itopo"
-	"github.com/scionproto/scion/go/lib/log"
-	"github.com/scionproto/scion/go/lib/overlay"
-	"github.com/scionproto/scion/go/lib/scmp"
-	"github.com/scionproto/scion/go/lib/snet"
-	"github.com/scionproto/scion/go/lib/spath"
-	"github.com/scionproto/scion/go/lib/spath/spathmeta"
-	"github.com/scionproto/scion/go/lib/topology"
-	"github.com/scionproto/scion/go/proto"
-	"gopkg.in/yaml.v2"
 	"io/ioutil"
 	"math/rand"
 	"net"
@@ -32,12 +17,27 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/docker/docker/client"
+	"github.com/kaldughayem/dynlinks/conf"
+	"github.com/scionproto/scion/go/lib/addr"
+	"github.com/scionproto/scion/go/lib/common"
+	"github.com/scionproto/scion/go/lib/ctrl"
+	"github.com/scionproto/scion/go/lib/log"
+	"github.com/scionproto/scion/go/lib/overlay"
+	"github.com/scionproto/scion/go/lib/sciond"
+	"github.com/scionproto/scion/go/lib/scmp"
+	"github.com/scionproto/scion/go/lib/snet"
+	"github.com/scionproto/scion/go/lib/spath"
+	"github.com/scionproto/scion/go/lib/spath/spathmeta"
+	"github.com/scionproto/scion/go/lib/topology"
+	"github.com/scionproto/scion/go/proto"
+	"gopkg.in/yaml.v2"
 )
 
 // resolveSVCAny resolves an anycast SVC address (i.e. a single instance of a local infrastructure service).
-func resolveSVCAny(svc addr.HostSVC) (*overlay.OverlayAddr, error) {
-	topo := itopo.GetCurrentTopology()
-	names, elemMap, err := getSVCNamesMap(svc)
+func resolveSVCAny(svc addr.HostSVC, topo *topology.Topo) (*overlay.OverlayAddr, error) {
+	names, elemMap, err := getSVCNamesMap(svc, topo)
 	if err != nil {
 		return nil, err
 	}
@@ -48,22 +48,21 @@ func resolveSVCAny(svc addr.HostSVC) (*overlay.OverlayAddr, error) {
 }
 
 // getSVCNamesMap returns the slice of instance names and addresses for a given SVC address.
-func getSVCNamesMap(svc addr.HostSVC) ([]string, map[string]topology.TopoAddr, error) {
+func getSVCNamesMap(svc addr.HostSVC, topo *topology.Topo) ([]string, map[string]topology.TopoAddr, error) {
 
-	t := itopo.GetCurrentTopology()
 	var names []string
 	var elemMap map[string]topology.TopoAddr
 	switch svc.Base() {
 	case addr.SvcBS:
-		names, elemMap = t.BSNames, t.BS
+		names, elemMap = topo.BSNames, topo.BS
 	case addr.SvcPS:
-		names, elemMap = t.PSNames, t.PS
+		names, elemMap = topo.PSNames, topo.PS
 	case addr.SvcCS:
-		names, elemMap = t.CSNames, t.CS
+		names, elemMap = topo.CSNames, topo.CS
 	case addr.SvcSB:
-		names, elemMap = t.SBNames, t.SB
+		names, elemMap = topo.SBNames, topo.SB
 	case addr.SvcSIG:
-		names, elemMap = t.SIGNames, t.SIG
+		names, elemMap = topo.SIGNames, topo.SIG
 	default:
 		return nil, nil, common.NewBasicError("Unsupported SVC address",
 			scmp.NewError(scmp.C_Routing, scmp.T_R_BadHost, nil, nil), "svc", svc)
@@ -78,7 +77,7 @@ func getSVCNamesMap(svc addr.HostSVC) ([]string, map[string]topology.TopoAddr, e
 // getPath gets first path to the remote address specified
 func getPath(local, remote *snet.Addr) (*spathmeta.AppPath, error) {
 	pathMgr := snet.DefNetwork.PathResolver()
-	pathSet := pathMgr.Query(context.Background(), local.IA, remote.IA)
+	pathSet := pathMgr.Query(context.Background(), local.IA, remote.IA, sciond.PathReqFlags{})
 
 	if len(pathSet) == 0 {
 		return nil, common.NewBasicError("No paths found", nil)
@@ -92,14 +91,15 @@ func getPath(local, remote *snet.Addr) (*spathmeta.AppPath, error) {
 }
 
 // SetupSVCAddress gets the paths, next hop and init the offsets for the given AS.
-func SetupSVCAddress(svc addr.HostSVC, localAddress *snet.Addr, remoteIA addr.IA) (*snet.Addr, error) {
+func SetupSVCAddress(svc addr.HostSVC, localAddress *snet.Addr, remoteIA addr.IA,
+	topo *topology.Topo) (*snet.Addr, error) {
 	address := &snet.Addr{
 		IA:   remoteIA,
 		Host: &addr.AppAddr{L3: svc, L4: addr.NewL4UDPInfo(0)},
 	}
 
 	// If the destination IA is not the same as the local IA then setup the paths and next hop address
-	if !localAddress.IA.Eq(remoteIA) {
+	if localAddress.IA != remoteIA {
 		p, err := getPath(localAddress, address)
 		if err != nil {
 			return nil, common.NewBasicError("Getting paths to AS", err)
@@ -114,7 +114,7 @@ func SetupSVCAddress(svc addr.HostSVC, localAddress *snet.Addr, remoteIA addr.IA
 		}
 	} else {
 		var err error
-		address.NextHop, err = resolveSVCAny(svc)
+		address.NextHop, err = resolveSVCAny(svc, topo)
 		if err != nil {
 			return nil, err
 		}
@@ -125,7 +125,7 @@ func SetupSVCAddress(svc addr.HostSVC, localAddress *snet.Addr, remoteIA addr.IA
 
 // SetupAddress sets the path and the next hop address to the remote address.
 func SetupAddress(localAddress, remoteAddress *snet.Addr) error {
-	if localAddress.IA.Eq(remoteAddress.IA) {
+	if localAddress.IA == remoteAddress.IA {
 		return nil
 	}
 
@@ -270,15 +270,19 @@ func FindFile(fileName string, path string) []string {
 // ValidateProperties checks the given metrics and returns an error or warns the user when one or more of the validation
 // checks fails.
 func ValidateProperties(linkProperties *conf.LinkProperties) error {
-	var err error
-
-	//nolint: ineffassign
-	err = validateRevocationParams(linkProperties)
-	err = checkRates(linkProperties)
-	err = validateDelayParams(linkProperties)
-	err = validateBandwidth(linkProperties)
-
-	return err
+	if err := validateRevocationParams(linkProperties); err != nil {
+		return err
+	}
+	if err := checkRates(linkProperties); err != nil {
+		return err
+	}
+	if err := validateDelayParams(linkProperties); err != nil {
+		return err
+	}
+	if err := validateBandwidth(linkProperties); err != nil {
+		return err
+	}
+	return nil
 }
 
 func validateBandwidth(linkProperties *conf.LinkProperties) error {
@@ -287,7 +291,8 @@ func validateBandwidth(linkProperties *conf.LinkProperties) error {
 		re := regexp.MustCompile(`^\d+([MmGgTtKk]?(bps|bit/s))$`)
 		rate := re.FindAllString(linkProperties.Rate, -1)
 		if len(rate) != 1 {
-			return common.NewBasicError("Invalid unit for bandwidth rate", nil, "rate", linkProperties.Rate)
+			return common.NewBasicError("Invalid unit for bandwidth rate", nil,
+				"rate", linkProperties.Rate)
 		}
 
 		// Get the number rate from the string, to make sure rate > 8bps

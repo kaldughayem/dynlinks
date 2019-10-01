@@ -2,9 +2,6 @@ package collector
 
 import (
 	"fmt"
-	"github.com/kaldughayem/dynlinks/utils"
-	"github.com/scionproto/scion/go/lib/common"
-	"github.com/scionproto/scion/go/lib/log"
 	"io/ioutil"
 	"math"
 	"os"
@@ -13,16 +10,21 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/kaldughayem/dynlinks/utils"
+	"github.com/scionproto/scion/go/lib/common"
+	"github.com/scionproto/scion/go/lib/log"
 )
 
 const (
 	// IA is the regex for IA addresses
 	IA = `\d+-[[:xdigit:]]+:[[:xdigit:]]+:[[:xdigit:]]+`
+	// Regex for the path format
+	PathRegex = `(?m)\[` + IA + ` \d+>(\d+ ` + IA + `\d+>)*\d+` + IA + `\]`
 )
 
 var (
-	pathRegex = fmt.Sprintf(`(?m)\[%s \d+>(\d+ %s \d+>)*\d+ %s\]`, IA, IA, IA)
-	file      *os.File
+	file *os.File
 )
 
 // AnalyzeResults aggregates the logs from the collector located in the passed logsDir.
@@ -93,10 +95,8 @@ func processPathSwitcherFile(fileName string) string {
 	var prevEntry pingerStats
 	var info string
 
-	trimmed := trimJunk(string(raw))
-
 	i := 0
-	for _, block := range regexp.MustCompile(`[#]+ ([^#].*\n)+`).FindAllString(trimmed, -1) {
+	for _, block := range regexp.MustCompile(`[#]+ ([^#].*\n)+`).FindAllString(string(raw), -1) {
 		// Parse the time
 		line := regexp.MustCompile(`^[#]+ time=.*\n`).FindString(block)
 		timeStr := strings.Split(line, "=")[1]
@@ -114,7 +114,7 @@ func processPathSwitcherFile(fileName string) string {
 
 		for _, rawPath := range availablePaths {
 
-			path := regexp.MustCompile(pathRegex).FindString(rawPath)
+			path := regexp.MustCompile(PathRegex).FindString(rawPath)
 			path = strings.Trim(path, "[]")
 
 			// Check if the path is already appended (only collect unique paths)
@@ -163,7 +163,6 @@ func processPathsFiles(fileName string) string {
 		log.Error("Reading latency file", "file", fileName, "err", err)
 	}
 	// Trim the Ctrl and non-ascii characters from the
-	trimmed := trimJunk(string(raw))
 
 	type pathStats struct {
 		paths     []string
@@ -173,7 +172,7 @@ func processPathsFiles(fileName string) string {
 	//var pathStatsMap []pathStats
 	var info string
 
-	blocks := regexp.MustCompile(`[#]+ ([^#].*\n)+`).FindAllString(trimmed, -1)
+	blocks := regexp.MustCompile(`[#]+ ([^#].*\n)+`).FindAllString(string(raw), -1)
 	for _, block := range blocks {
 		// Parse the timestamp of this measurement
 		line := regexp.MustCompile(`time=(.*)`).FindString(block)
@@ -206,7 +205,7 @@ func processPathsFiles(fileName string) string {
 				continue
 			}
 
-			path := regexp.MustCompile(pathRegex).FindString(rawPath)
+			path := regexp.MustCompile(PathRegex).FindString(rawPath)
 			path = strings.Trim(path, "[]")
 
 			if utils.StringInSlice(path, entry.paths) {
@@ -290,7 +289,8 @@ func processLatencyFiles(fileName string) string {
 	avgDelay := time.Duration(totalDelay.Nanoseconds() / (int64(i)))
 	packetLoss := strings.Split(regexp.MustCompile(`\d+% packet loss`).FindString(string(raw)), "%")[0]
 
-	return fmt.Sprintf("\n\tJitter:\t\t\t%s\n\tAverage latency:\t%s\n\tPacket loss:\t\t%s\n", jitter, avgDelay, packetLoss)
+	return fmt.Sprintf("\n\tJitter:\t\t\t%s\n\tAverage latency:\t%s\n\tPacket loss:\t\t%s\n",
+		jitter, avgDelay, packetLoss)
 }
 
 // nolint: gocyclo
@@ -301,9 +301,6 @@ func processBandwidthFiles(fileName string) string {
 		log.Error("Reading bandwidth file", "file", fileName, "err", err)
 		return ""
 	}
-
-	// Trim the Ctrl and non ascii characters from the
-	trimmed := trimJunk(string(raw))
 
 	type bandwidthStats struct {
 		lossServerToClient float64
@@ -320,10 +317,10 @@ func processBandwidthFiles(fileName string) string {
 	totalAttemptedSCBW := uint64(0)
 
 	var bandwidthMeasurements []bandwidthStats
-	for _, block := range strings.Split(trimmed, strings.Repeat("#", 10)+"\n") {
+	for _, block := range strings.Split(string(raw), strings.Repeat("#", 10)+"\n") {
 		// Check the path to make sure we used that link and not some other path
 		path := regexp.MustCompile(`path=".*"`).FindString(block)
-		path = regexp.MustCompile(pathRegex).FindString(path)
+		path = regexp.MustCompile(PathRegex).FindString(path)
 		hops := strings.Split(path, ">")
 		if len(hops) != 2 {
 			continue
@@ -393,8 +390,8 @@ func processBandwidthFiles(fileName string) string {
 		"\n\tAverage loss:			%f%%\nServer -> Client stats:\n\tAverage available bandwidth:	%f Mbps"+
 		"\n\tAverage loss:			%f%%\nTotal Measurements:	%d\nFailed Measurements:	%d\n",
 		float64(avgCSBw)/1000000, avgCSLoss*100, float64(avgSCBw)/1000000, avgSCLoss*100,
-		len(strings.Split(trimmed, strings.Repeat("#", 10)+"\n"))-1,
-		len(strings.Split(trimmed, strings.Repeat("#", 10)+"\n"))-len(bandwidthMeasurements)-1)
+		len(strings.Split(string(raw), strings.Repeat("#", 10)+"\n"))-1,
+		len(strings.Split(string(raw), strings.Repeat("#", 10)+"\n"))-len(bandwidthMeasurements)-1)
 }
 
 // getBandwidthInfoFromBlock processes a Bandwidth data block and returns the achieved bandwidth, attempted bandwidth,
@@ -422,27 +419,4 @@ func getBandwidthInfoFromBlock(block string) (uint64, uint64, float64, error) {
 
 	return achievedBW, attemptedBW, loss, nil
 
-}
-
-// trimJunk trims all non ASCII chars uses trimCtrlChars to trim unwanted control characters
-func trimJunk(s string) string {
-	// Get only ASCII chars
-	re := regexp.MustCompile("[[:^ascii:]]")
-	ascii := re.ReplaceAllLiteralString(s, "")
-	trimmed := trimCtrlChars(ascii)
-	return trimmed
-}
-
-// trimCtrlChars trims all unnecessary control characters in str
-func trimCtrlChars(str string) string {
-	b := make([]byte, len(str))
-	var bl int
-	for i := 0; i < len(str); i++ {
-		c := str[i]
-		if c >= 32 && c != 127 || c == 10 || c == 13 || c == 230 { // 230=mu, 10=\n, 13=\r
-			b[bl] = c
-			bl++
-		}
-	}
-	return string(b[:bl])
 }
