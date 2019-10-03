@@ -1,10 +1,10 @@
 # gen-dir: is the directory containing the gen directories for the ASes (needs to be downloaded from SCION lab)
-gen-dir: "/home/ubuntu/gen-dirs/"
+gen-dir: "/home/khalid/gen_dirs/"
 # (optional) new network name to create, default=scion-docker-network"
 network-name: "scion-network"
 # subnet for new network to connect containers to, if using default docker network no need to set the subnet i.e. subnet
 # is ignored
-subnet: "172.17.0.0/16"
+subnet: "172.19.0.0/16"
 # MTU for the new network to be created (default network is not affected)
 MTU: "9000"
 

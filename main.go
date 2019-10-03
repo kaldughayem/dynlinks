@@ -149,7 +149,7 @@ func main() {
 
 	// Catch user interrupt
 	utils.SetupSignals(func() {
-		log.Trace("Captured Interrupt")
+		log.Debug("Captured Interrupt")
 		closeExitChan()
 	})
 
@@ -191,7 +191,7 @@ func main() {
 	// if the duration is set, then signal the running goroutines after the duration expires
 	if *duration > 0 {
 		go time.AfterFunc(*duration, func() {
-			log.Trace("Timer expired, signaling channel")
+			log.Debug("Timer expired, exiting")
 			// close the exit channel to signal the other running go routines to exit
 			closeExitChan()
 		})

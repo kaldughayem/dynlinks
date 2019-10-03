@@ -5,7 +5,25 @@ package topomaker
 import (
 	"bufio"
 	"context"
+	rand2 "crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
 	"fmt"
+	"io"
+	"io/ioutil"
+	"math/big"
+	"math/rand"
+	"net"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/api/types/network"
@@ -20,16 +38,6 @@ import (
 	"github.com/scionproto/scion/go/lib/log"
 	"github.com/scionproto/scion/go/lib/overlay"
 	"github.com/scionproto/scion/go/lib/topology"
-	"io"
-	"io/ioutil"
-	"math/rand"
-	"net"
-	"os"
-	"os/exec"
-	"path/filepath"
-	"strconv"
-	"strings"
-	"sync"
 )
 
 const (
@@ -93,6 +101,9 @@ func Run(topoFile, outputLinks string, installSCIONApps bool) {
 		os.Exit(1)
 	}
 
+	if err := generateCerts(topoConfig); err != nil {
+		log.Crit("Unable to generate certificates for containers in 'gen-certs' dir", "err", err)
+	}
 	// restart all SCION services
 	startNewTopology(cl, topoConfig.ASes)
 
@@ -108,9 +119,81 @@ func Run(topoFile, outputLinks string, installSCIONApps bool) {
 	os.Exit(0)
 }
 
+// generateCerts generates the certificates in gen-certs if they do not exist. The beacon server,
+// path server, and scion daemon won't start if the certs are not there.
+func generateCerts(config *conf.TopoConfig) error {
+	for as, info := range config.ASes {
+		// Check if the certificates exist
+		if _, err := os.Stat(filepath.Join(info.Info.ConfigDir, "gen-certs", "tls.key")); err == nil {
+			if _, err := os.Stat(filepath.Join(info.Info.ConfigDir, "gen-certs", "tls.pem")); err == nil {
+				continue
+			}
+		}
+		if err := utils.CheckAndCreateDir(filepath.Join(info.Info.ConfigDir, "gen-certs")); err != nil {
+			return err
+		}
+
+		// populate the certificate data
+		template := &x509.Certificate{
+			IsCA:                  true,
+			BasicConstraintsValid: true,
+			SubjectKeyId:          []byte{1, 2, 3},
+			SerialNumber:          big.NewInt(1234),
+			Subject: pkix.Name{
+				CommonName: "scion_def_srv",
+			},
+			NotBefore: time.Now(),
+			NotAfter:  time.Now().AddDate(10, 0, 0),
+			// see http://golang.org/pkg/crypto/x509/#KeyUsage
+			ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth},
+			KeyUsage:    x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign,
+		}
+
+		// generate private key
+		privatekey, err := rsa.GenerateKey(rand2.Reader, 2048)
+		if err != nil {
+			return err
+		}
+		publickey := &privatekey.PublicKey
+
+		// create a self-signed certificate. template = parent
+		var parent = template
+		cert, err := x509.CreateCertificate(rand2.Reader, template, parent, publickey, privatekey)
+		if err != nil {
+			return err
+		}
+
+		path := filepath.Join(info.Info.ConfigDir, "gen-certs")
+		// save private key
+		pemfile, _ := os.Create(filepath.Join(path, "tls.key"))
+		var pemkey = &pem.Block{
+			Type:  "RSA PRIVATE KEY",
+			Bytes: x509.MarshalPKCS1PrivateKey(privatekey)}
+		if err := pem.Encode(pemfile, pemkey); err != nil {
+			return err
+		}
+		pemfile.Close()
+		log.Debug("Private key generated and saved to tls.key", "AS", as)
+
+		// save the certificate.
+		pemfile, _ = os.Create(filepath.Join(path, "tls.pem"))
+		var pemcert = &pem.Block{
+			Type:  "CERTIFICATE",
+			Bytes: cert}
+		if err := pem.Encode(pemfile, pemcert); err != nil {
+			return err
+		}
+		pemfile.Close()
+		log.Debug("Certificate created and saved to tls.pem", "AS", as)
+
+	}
+	return nil
+}
+
 // startNewTopology reloads the supervisor, builds the binaries on one of the containers,
 // copies the binaries to other containers, and restarts SCION on all containers and the host machine
 func startNewTopology(cl *client.Client, asMap conf.ASMap) {
+	// TODO (packages) change restarting of services
 	log.Info("Restarting the SCION services...")
 	// restart SCION services on the local host
 	cmd := exec.Command("./scion.sh", "stop")
@@ -805,6 +888,7 @@ func createContainer(containerName string, mountDirPath string) error {
 	if err := os.Setenv("SCION_CNTR", containerName); err != nil {
 		return common.NewBasicError("Setting SCION_MOUNT env variable", err)
 	}
+	// TODO (packages) create containers using the API
 	// make the new containers through docker.sh
 	cmd := exec.Command("./docker.sh", "start")
 	cmd.Dir = os.Getenv("SC")
@@ -842,11 +926,11 @@ func startContainer(container types.ContainerJSON, cl *client.Client) error {
 	return nil
 }
 
-// check intitial check to see in SCION is running on the host machine, that docker is installed,
+// check initial check to see in SCION is running on the host machine, that docker is installed,
 // builds the SCION docker images using docker.sh from the SCION repo, and verifies the parsed
 // configuration file.
 func check(topoConfig *conf.TopoConfig, cl *client.Client) error {
-	// scion
+	// TODO (packages) check status of scion services
 	cmd := exec.Command("./scion.sh", "status")
 	cmd.Dir = os.Getenv("SC")
 
@@ -873,7 +957,7 @@ func check(topoConfig *conf.TopoConfig, cl *client.Client) error {
 	return nil
 }
 
-// verifyConfig verfires the values in the parsed YAML configuraiton file
+// verifyConfig verfires the values in the parsed YAML configuration file
 func verifyConfig(topoConfig *conf.TopoConfig) error {
 	// check gen directory
 	if topoConfig.GenDir == "" {
@@ -912,6 +996,7 @@ func verifyConfig(topoConfig *conf.TopoConfig) error {
 
 // dockerDefaultNetwork returns true if we are to use the default docker network.
 func dockerDefaultNetwork() (ip net.IP, err error) {
+	// TODO (packages) check the docker network IP internally
 	cmd := exec.Command("./tools/docker-ip")
 	cmd.Dir = os.Getenv("SC")
 	output, err := cmd.CombinedOutput()
@@ -941,6 +1026,7 @@ func buildBaseImages(cl *client.Client) error {
 		}
 	}
 
+	// TODO (packages) no need for this after building the packages
 	log.Info("SCION docker image not built, building image...")
 	// Build base image first
 	cmd := exec.Command("./docker.sh", "base")
@@ -963,6 +1049,7 @@ func buildBaseImages(cl *client.Client) error {
 
 // setGenDirs gets the gen directory for each of the ASes
 func setGenDirs(genDirsPath string, asMap conf.ASMap) error {
+	// TODO (package) assumption about SC env var, point to /etc/scion/gen instead and look in the SC var if not found
 	iaFiles := append(utils.FindFile("ia", genDirsPath), filepath.Join(os.Getenv("SC"), "gen", "ia"))
 	for _, iaFile := range iaFiles {
 		ia, err := ioutil.ReadFile(iaFile)

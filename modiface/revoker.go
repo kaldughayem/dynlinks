@@ -193,12 +193,17 @@ func (r *Revoker) simpleRevocationProcess(revocationFunction func() error) {
 
 		if r.period > 0 {
 			// If period is set, revert changes then start again
-			time.Sleep(r.period)
+			if !r.getStop() {
+				time.Sleep(r.period)
+			} else {
+				break
+			}
 			if err := r.revertChanges(); err != nil {
 				r.log.Error("Reverting changes", "err", err)
 			}
-
-			time.Sleep(r.period)
+			if !r.getStop() {
+				time.Sleep(r.period)
+			}
 		} else {
 			// Wait for exit signal to revert changes
 			r.wg.Wait()

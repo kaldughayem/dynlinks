@@ -157,7 +157,7 @@ func (m *Modiface) exitFunction() {
 		if err := revertTcChanges(m.cfg); err != nil {
 			m.log.Error("Reverting changes", "err", err)
 		} else {
-			m.log.Debug("Reverted changes successfully")
+			m.log.Debug("Reverted changes")
 		}
 		m.wg.Done()
 	}

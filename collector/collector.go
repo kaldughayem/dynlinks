@@ -127,7 +127,7 @@ func (c *Collector) Run() {
 
 	c.wg.Wait()
 
-	log.Trace("Running aggregator...")
+	log.Debug("Running aggregator...")
 	// Run the aggregator
 	AnalyzeResults(c.cfg.LogsPath)
 }
@@ -420,7 +420,8 @@ func (c *Collector) singleBandwidthMeasurement(f os.File, link conf.Link, wg *sy
 				<-timer.C
 				log.Warn("Single bandwidth measurement been running for longer than a minute!",
 					"link", link.ASA+"_"+link.ASB)
-				// TODO handle the situation by terminating the process or returning from the caller function
+				// TODO handle the situation by terminating the process or returning from the caller
+				//  function if the bwtesterclient locks
 			}()
 			bwtestClientPath := filepath.Join(os.Getenv("GOPATH"), "bin", "bwtestclient")
 			// #nosec
@@ -459,7 +460,6 @@ func setBandwidth(rate string) (string, error) {
 func (c *Collector) killRunningProcesses() {
 	log.Trace("killing running collector processes")
 	for _, p := range c.processes {
-		// kill scmp echo
 		if err := exec.Command("pkill", p).Run(); err != nil {
 			log.Error("killing process", "process name", p, "err", err)
 		}
@@ -515,7 +515,6 @@ func (c *Collector) measurePathSwitching() {
 			log.Error("Writing separator to the file", "err", err)
 			continue
 		}
-		//args := []string{"-dstIA", dstIA, "-srcIA", c.cfg.LocalAddress.IA.String(), "-refresh", "-p", "-local", srcAddress}
 		// do not check the path health because we just want to query for the paths.
 		args := []string{"-dstIA", dstIA, "-srcIA", c.cfg.LocalAddress.IA.String(), "-refresh"}
 		_ = runCmdLocally(scmpPath, args, f)
@@ -562,7 +561,7 @@ func runCmdInContainer(cli *client.Client, containerName string, cmd []string, w
 
 // runCmdLocally runs a command on the hosts machine.
 func runCmdLocally(cmdPath string, args []string, writer io.Writer) error {
-	// #nosec
+	// TODO (packages) need to find a way to run the tools without the scion dir
 	cmd := exec.Command(cmdPath, args...)
 	cmd.Dir = os.Getenv("SC")
 	if writer != nil {
@@ -585,10 +584,10 @@ func runCmdLocally(cmdPath string, args []string, writer io.Writer) error {
 // LocalAddress specified to one of the ASes in the ASInfos passed (usually
 // the containerized ASes)
 func findMultipathAS(asInfos conf.ASInfos, localAddress *snet.Addr) string {
+	// TODO (packages) need to find a way to run the tools without the scion dir
 	for dstIA := range asInfos {
 		showPaths := filepath.Join("bin", "showpaths")
 		args := []string{"-srcIA", localAddress.IA.String(), "-dstIA", dstIA, "-refresh"}
-		// #nosec
 		cmd := exec.Command(showPaths, args...)
 		cmd.Dir = os.Getenv("SC")
 		output, err := cmd.CombinedOutput()

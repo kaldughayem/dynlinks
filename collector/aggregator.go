@@ -61,7 +61,7 @@ func walkFunction(path string, info os.FileInfo, err error) error {
 				aggregatorLogger("\nPath switcher log analysis: " + processPathSwitcherFile(path))
 			} else if info.Name() == "resource_usage.log" {
 				// TODO more processing on the resource usage files
-				log.Warn("Resource usage log analysis not implemented yet.")
+				log.Trace("Resource usage log analysis not implemented yet.")
 			}
 		}
 	}

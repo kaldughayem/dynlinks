@@ -187,6 +187,7 @@ func pack(u proto.Cerealizable, signer ctrl.Signer) (common.RawBytes, error) {
 // SetASInfo gets the AS names from the specified gen path, and get the path to their configuration directories
 // (where the keys and topology.json file are) and loads the topology of each AS.
 func SetASInfo(genPath string, asInfos conf.ASInfos) error {
+	// TODO (packages) change the assumption about the SC env var, point to /etc/scion/gen
 	// Add the host AS which is also the attachment point
 	iaFile := FindFile("ia", filepath.Join(os.Getenv("SC"), "gen"))
 	if len(iaFile) == 0 {
@@ -196,7 +197,7 @@ func SetASInfo(genPath string, asInfos conf.ASInfos) error {
 	if err != nil {
 		return common.NewBasicError("Reading ActiveAS from file", err)
 	}
-
+	// TODO (packages) change the assumption about the SC env var, point to /etc/scion/gen
 	configDirs := FindFile("keys", filepath.Join(os.Getenv("SC"), "gen"))
 	if len(configDirs) == 0 {
 		return common.NewBasicError("Finding keys directory in host en dir", nil)
@@ -338,8 +339,6 @@ func ratesAreGreater(linkProperties *conf.LinkProperties) bool {
 }
 
 func validateRevocationParams(linkProperties *conf.LinkProperties) error {
-	otherParamsSet(linkProperties)
-
 	if (linkProperties.RevocationProb < 100 && !linkProperties.Revoke) ||
 		(linkProperties.RevocationPeriod > 0 && !linkProperties.Revoke) {
 		log.Warn("Revocation probability and/or revocation delay are set and revoke flag is false")
@@ -350,16 +349,6 @@ func validateRevocationParams(linkProperties *conf.LinkProperties) error {
 	}
 
 	return nil
-}
-
-func otherParamsSet(linkProperties *conf.LinkProperties) {
-	if linkProperties.Revoke {
-		if linkProperties.Delay != 0 || linkProperties.Rate != "" || linkProperties.Corrupt != 0 ||
-			linkProperties.Loss != 0 || linkProperties.Duplicate != 0 {
-			log.Warn("Revoke flag is set for the link while other linkProperties are set for link " +
-				"deterioration, they might be ineffective because link is revoked.")
-		}
-	}
 }
 
 func validateRevocationMethod(linkProperties *conf.LinkProperties) error {
@@ -571,7 +560,7 @@ func SlicesEqual(a, b []string) bool {
 	return true
 }
 
-// SaveFile saves the given data structure a to a YAML file in path
+// SaveToYAMLFile saves the given data structure a to a YAML file in path
 func SaveToYAMLFile(path string, a interface{}) error {
 	yamlData, err := yaml.Marshal(a)
 	if err != nil {
@@ -600,7 +589,7 @@ func SaveToYAMLFile(path string, a interface{}) error {
 	return nil
 }
 
-// SaveFile saves the given data structure a to a JSON file in path
+// SaveToJSONFile saves the given data structure a to a JSON file in path
 func SaveToJSONFile(path string, a interface{}) error {
 	// Save new topology
 	jsonData, err := json.MarshalIndent(a, "", "  ")
@@ -638,7 +627,7 @@ func LoadYAML(file string, a interface{}) error {
 	return nil
 }
 
-// commandExists Checks if command exists
+// commandExists Checks if command exists on the host machine
 func CommandExists(name string) bool {
 	// #nosec
 	cmd := exec.Command("/bin/sh", "-c", "command -v "+name)
