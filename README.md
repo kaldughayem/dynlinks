@@ -29,6 +29,37 @@ The tool has two main modes of operation:
 - Running link modification experiments using the `exp` subcommand.
 
 ### Topology Creation 
+First, a SCION instance should be running on the host machine's AS and is connected to the SCION lab. 
+For the time being, the SCION instance running on the host must be built from the source code, meaning that all the scion binaries were built using the `scion.sh` script, the SCION repository and all of its dependencies are present in the `$SC` environment variable. 
+<!--This is temporary until the tool is updated to use the packaged SCION binaries.  -->
+
+Then, download the configuration files from the SCIONLab Coordinator, extract each configuration in a directory, and place all the newly extracted configuration directories in one directory.
+
+**NOTE**: All ASes should be created to be connected to the same ISD as the host machine's AS.
+
+For example, if you downloaded three configuration files for three ASes, then you should have the following directories structure:
+```
+gen_dirs:
+    AS_1_config:
+        gen:
+            ...
+        ... 
+    AS_2_config:
+        gen:
+            ...
+        ...
+    AS_3_config:
+        gen:
+            ...
+        ... 
+```
+
+The next step is temporary to re-point all the ASes configuration files to the scion directory in the `$SC` directory:
+<!-- (this step should be unnecessary when Dynamic Links is updated to use the packaged scion binaries):-->
+```bash
+./change_gens_path /path/to/gen_dirs
+```
+
 The tool can be used to create a new topology by running the following command (assuming the tool is built as dynlinks):
 ```bash
 ./dynlinks -config TOPO.YAML -buildApps -o EMPTY_PROPERTIES.YAML
@@ -41,18 +72,18 @@ An example with comments can be seen in the [example.topo](example.topo) file.
 ### Modifying links
 The user can set the properties of links in the topology interactively by running using the `-i` flag:
 ```bash
-./dynlinks exp -gen PATH/TO/GEN/DIRS -i
+./dynlinks exp -gen /path/to/gen_dirs -i
 ```
 The `-gen` option is to pass to the tool the location where the gen directories mounted by the containers are mounted (more information in the [example.topo](example.topo) file). 
 
 To run the tool using a properties file:
 ```bash
-./dynlinks exp -gen PATH/TO/GEN/DIRS -p PROPERTIES.YAML
+./dynlinks exp -gen path/to/gen_dirs -p properties.yaml
 ```
 The properties can be obtained by running the tool with the `-o` option.
 
-For more ifrmation about the different options, use the `-h` or `-help` flag with any of the tools sub commands.
- 
+For more information about the different options, use the `-h` or `-help` flag with any of the tools sub commands.
+
  
  
 ## Internals
