@@ -124,7 +124,6 @@ func NewRevoker(config *Config) *Revoker {
 // revocation method revoke that interface to stop all incoming and outgoing
 // communication.
 func (r *Revoker) Run() {
-	var err error
 	r.wg.Add(1)
 
 	r.timerChan = make(chan struct{})
@@ -138,12 +137,6 @@ func (r *Revoker) Run() {
 
 	// Setup the logger for the revoker
 	r.log = log.New("revoker", r.cfg.ID)
-
-	defer func() {
-		if err = r.revertChanges(); err != nil {
-			r.log.Error("Reverting changes", "err", err)
-		}
-	}()
 
 	switch r.method {
 	case RevocationToken:
@@ -186,28 +179,33 @@ func (r *Revoker) simpleRevocationProcess(revocationFunction func() error) {
 		}
 
 		if err != nil {
-			r.log.Error("Revoking interface", "method", r.method, "err", err)
+			r.log.Error("Revoking interface", "AS", r.cfg.ActiveAS, "IFID", r.cfg.IFID, "method",
+				r.method, "err", err)
 		} else {
 			r.log.Info("Revoked interface", "AS", r.cfg.ActiveAS, "IFID", r.cfg.IFID, "method", r.method)
 		}
 
 		if r.period > 0 {
 			// If period is set, revert changes then start again
-			if !r.getStop() {
-				time.Sleep(r.period)
-			} else {
+			if r.getStop() {
 				break
 			}
+			time.Sleep(r.period)
 			if err := r.revertChanges(); err != nil {
 				r.log.Error("Reverting changes", "err", err)
 			}
-			if !r.getStop() {
-				time.Sleep(r.period)
+			if r.getStop() {
+				break
 			}
+			time.Sleep(r.period)
 		} else {
 			// Wait for exit signal to revert changes
 			r.wg.Wait()
 		}
+	}
+
+	if err := r.revertChanges(); err != nil {
+		r.log.Error("Reverting changes", "err", err)
 	}
 }
 
