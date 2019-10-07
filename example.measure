@@ -6,6 +6,6 @@ latency: true
 # Path switching looks for an AS with two paths or more from the host machine's AS, then
 # start retrieving paths to the that AS continuously throughout the experiment.
 pathswitching: false
-resourceusage: true
+resourceusage: false
 # Get the paths from every AS and to every AS in the topology to see the available paths for each AS.
-paths: true
+paths: false

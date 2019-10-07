@@ -14,8 +14,8 @@ ASes:
   "19-ffaa:1:24": {AP: True}
   # mtu here is for communication within the AS
   "19-ffaa:1:28": {mtu: 9000}
-  "19-ffaa:1:42": {}
-  "19-ffaa:1:87": {}
+  "19-ffaa:1:42": {mtu: 1472}
+  "19-ffaa:1:87": {mtu: 9000}
 
 links:
   #  bw and mtu in this case is for this specific SCION interface

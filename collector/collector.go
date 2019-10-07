@@ -561,7 +561,6 @@ func runCmdInContainer(cli *client.Client, containerName string, cmd []string, w
 
 // runCmdLocally runs a command on the hosts machine.
 func runCmdLocally(cmdPath string, args []string, writer io.Writer) error {
-	// TODO (packages) need to find a way to run the tools without the scion dir
 	cmd := exec.Command(cmdPath, args...)
 	cmd.Dir = os.Getenv("SC")
 	if writer != nil {
@@ -584,7 +583,6 @@ func runCmdLocally(cmdPath string, args []string, writer io.Writer) error {
 // LocalAddress specified to one of the ASes in the ASInfos passed (usually
 // the containerized ASes)
 func findMultipathAS(asInfos conf.ASInfos, localAddress *snet.Addr) string {
-	// TODO (packages) need to find a way to run the tools without the scion dir
 	for dstIA := range asInfos {
 		showPaths := filepath.Join("bin", "showpaths")
 		args := []string{"-srcIA", localAddress.IA.String(), "-dstIA", dstIA, "-refresh"}
