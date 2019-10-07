@@ -28,7 +28,6 @@ import (
 	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/client"
 	"github.com/docker/docker/pkg/archive"
-	"github.com/docker/docker/pkg/fileutils"
 	"github.com/docker/docker/pkg/stdcopy"
 	"github.com/kaldughayem/dynlinks/conf"
 	"github.com/kaldughayem/dynlinks/utils"
@@ -76,10 +75,15 @@ func Run(topoFile, outputLinks string, installSCIONApps bool) {
 		os.Exit(1)
 	}
 
-	// make containers
+	// Create/start containers
 	if err := handleContainers(cl, topoConfig); err != nil {
 		log.Crit("Handling containers", "err", err)
 		os.Exit(1)
+	}
+
+	// install scion apps
+	if installSCIONApps {
+		installApps(cl, topoConfig.ASes)
 	}
 
 	// create and/or attach containers to the network then set their IP addresses in the topoConfig struct
@@ -87,11 +91,6 @@ func Run(topoFile, outputLinks string, installSCIONApps bool) {
 		topoConfig.ASes); err != nil {
 		log.Crit("Handling network", "err", err)
 		os.Exit(1)
-	}
-
-	// install scion apps
-	if installSCIONApps {
-		installApps(cl, topoConfig.ASes)
 	}
 
 	log.Info("Generating new topology files...")
@@ -225,9 +224,9 @@ func startNewTopology(cl *client.Client, asMap conf.ASMap) {
 			Cmd:          []string{"./scion.sh", "stop"},
 		})
 		if err != nil {
-			log.Error("Stopping SCION", "container", containerName, "err", err, "output", output)
+			log.Error("Stopping SCION", "containerName", containerName, "err", err, "output", output)
 		} else {
-			log.Debug("Stopped SCION", "container", containerName)
+			log.Debug("Stopped SCION", "containerName", containerName)
 		}
 
 		// reload supervisord
@@ -238,34 +237,34 @@ func startNewTopology(cl *client.Client, asMap conf.ASMap) {
 			Cmd:          []string{"supervisor/supervisor.sh", " reload"},
 		})
 		if err != nil {
-			log.Error("Reloading supervisor", "container", containerName, "err", err, "output", output)
+			log.Error("Reloading supervisor", "containerName", containerName, "err", err, "output", output)
 		} else {
-			log.Debug("Reloaded supervisor", "container", containerName)
+			log.Debug("Reloaded supervisor", "containerName", containerName)
 		}
 
 		var cmd []string
 		var out io.Writer
 		// check if scion is built
 		if scionBuilt(cl, containerName) {
-			log.Debug("Found SCION built in container", "container", containerName)
+			log.Debug("Found SCION built in container", "containerName", containerName)
 			cmd = []string{"./scion.sh", "start", "nobuild"}
 		} else {
-			log.Debug("SCION not built in container", "container", containerName)
+			log.Debug("SCION not built in container", "containerName", containerName)
 			if _, err := os.Stat(temporaryBinsDirectory); os.IsNotExist(err) {
-				log.Trace("Building binaries")
+				log.Trace("Building binaries...")
 				cmd = []string{"./scion.sh", "start"}
 				out = os.Stdout
 			} else {
-				log.Trace("Putting built binaries in container", "container", containerName)
+				log.Trace("Putting built binaries in container", "containerName", containerName)
 				dstPath := "/home/scion/go/src/github.com/scionproto/scion/"
 				if err := putBinaries(cl, containerName, temporaryBinsDirectory, dstPath); err != nil {
-					log.Error("Copying binaries to container", "container", containerName, "err", err)
+					log.Error("Copying binaries to container", "containerName", containerName, "err", err)
 				}
 				cmd = []string{"./scion.sh", "start", "nobuild"}
 				out = nil
 			}
 		}
-		log.Debug("Starting SCION...", "container", containerName)
+		log.Debug("Starting SCION...", "containerName", containerName)
 		_, err = runCommandInContainer(cl, containerName, out, types.ExecConfig{
 			User:         "scion",
 			AttachStderr: true,
@@ -278,13 +277,13 @@ func startNewTopology(cl *client.Client, asMap conf.ASMap) {
 
 		// Get the binaries from the container if we don't have them
 		if _, err := os.Stat(temporaryBinsDirectory); os.IsNotExist(err) {
-			log.Trace("Getting built binaries from container", "container", containerName)
+			log.Trace("Getting built binaries from container", "containerName", containerName)
 			if err := utils.CheckAndCreateDir(temporaryBinsDirectory); err != nil {
 				log.Error("Creating temporary directory", "name", temporaryBinsDirectory)
 			}
 			srcPath := "/home/scion/go/src/github.com/scionproto/scion/bin/"
 			if err := getBinaries(cl, containerName, srcPath, temporaryBinsDirectory); err != nil {
-				log.Error("Getting binaries from container", "container", containerName, "err", err)
+				log.Error("Getting binaries from container", "containerName", containerName, "err", err)
 			}
 		}
 	}
@@ -634,47 +633,67 @@ func loadTopologies(asMap conf.ASMap) error {
 	return nil
 }
 
-// installApps installs SCION apps on all the simultaneously containers
+// installApps builds SCION apps' binaries on the host machine first (if it is not built), then
+// copies the binaries to each of the containers (if the binaries do not exist in the container).
+//
+// This needs to be changed later, because is the operating system of the host machine is not ubuntu16.04
+// most likely will not work. However, this is a temporary solution for the problem.
 func installApps(cl *client.Client, asMap conf.ASMap) {
+	appsPath := filepath.Join(os.Getenv("GOPATH"), "bin")
+
+	// Check if the apps are installed in the host machine
+	bwtestclientPath := filepath.Join(appsPath, "bwtestclient")
+	bwtestserverPath := filepath.Join(appsPath, "bwtestclient")
+	_, err1 := os.Stat(bwtestclientPath)
+	_, err2 := os.Stat(bwtestserverPath)
+
+	if os.IsNotExist(err1) || os.IsNotExist(err2) {
+		log.Info("Installing SCION apps on host machine, this will take 10-15 minutes")
+		cmd := exec.Command("install_apps.sh")
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err != nil {
+			log.Error("Running install apps script on host machine ", "err", err)
+			return
+		}
+	} else if err1 != nil {
+		log.Error("Something went wrong while checking directory", "dir", bwtestclientPath, "err", err1)
+	} else if err2 != nil {
+		log.Error("Something went wrong while checking directory", "dir", bwtestserverPath, "err", err2)
+	}
+
 	for as, info := range asMap {
 		if info.Info.AP {
 			continue
 		}
-		name := strings.Replace(as, ":", "_", -1)
-		if appInstalled(cl, name) {
-			log.Debug("Found SCION applications built, getting apps binaries", "container", name)
-			if _, err := os.Stat(temporaryBinsDirectory); os.IsNotExist(err) {
-				if err := utils.CheckAndCreateDir(temporaryBinsDirectory); err != nil {
-					log.Error("Creating temporary directory", "name", temporaryBinsDirectory)
-				}
-				srcPath := "/home/scion/go/bin/"
-				if err := getBinaries(cl, name, srcPath, temporaryBinsDirectory); err != nil {
-					log.Error("Getting apps binaries", "err", err)
-				}
-			}
-			continue
-		}
-		if _, err := os.Stat(temporaryBinsDirectory); os.IsNotExist(err) {
-			log.Debug("Installing SCION applications in container, this might take a while...",
-				"container name", name)
-			installAppInContainer(cl, name, info.Info.ConfigDir)
-			if err := utils.CheckAndCreateDir(temporaryBinsDirectory); err != nil {
-				log.Error("Creating temporary directory", "name", temporaryBinsDirectory)
-			}
-			srcPath := "/home/scion/go/bin/"
-			if err := getBinaries(cl, name, srcPath, temporaryBinsDirectory); err != nil {
-				log.Error("Getting apps binaries", "err", err)
-			}
-		} else if err == nil {
-			log.Debug("Putting SCION apps binaries in container...",
-				"container name", name)
-			dstPath := "/home/scion/go/bin/"
-			if err := putBinaries(cl, name, temporaryBinsDirectory, dstPath); err != nil {
-				log.Error("Putting built binaries in container", "container", name)
-			}
-		}
-	}
 
+		cntName := strings.Replace(as, ":", "_", -1)
+
+		if appInstalled(cl, cntName) {
+			log.Debug("Found SCION applications' binaries", "containerName", cntName)
+		} else {
+			dstPath := "/home/scion/go/bin"
+			log.Debug("Putting SCION apps binaries in container...", "container cntName", cntName)
+			// Create the  GOPATH/bin directory to copy the apps' binaries there
+			execConfig := types.ExecConfig{
+				AttachStderr: true,
+				AttachStdout: true,
+				Env:          []string{"SC=/home/scion/go/src/github.com/scionproto/scion"},
+				Cmd:          []string{"mkdir", dstPath},
+			}
+			output, err := runCommandInContainer(cl, cntName, nil, execConfig)
+			if err != nil {
+				log.Error("Making \"$GOPATH/bin\" directory to put apps there", "err", err,
+					"output", output)
+			}
+
+			if err := putBinaries(cl, cntName, appsPath, dstPath); err != nil {
+				log.Error("Putting built binaries in container", "containerName", cntName, "err", err)
+			}
+
+		}
+
+	}
 }
 
 // appInstalled checks if bwtester is installed on the container
@@ -699,32 +718,6 @@ func appInstalled(cl *client.Client, containerName string) bool {
 	}
 
 	return false
-}
-
-// installAppInContainer installs SCION apps inside the container
-func installAppInContainer(cl *client.Client, containerName, dir string) {
-	defer func() {
-		log.Info("Finished installing apps", "container", containerName)
-		//wg.Done()
-	}()
-	// move the script to the mounted directory
-	script := "install_apps.sh"
-	dst := filepath.Join(dir, "gen", script)
-	if _, err := fileutils.CopyFile(script, dst); err != nil {
-		log.Error("Copying script to container mounted dir", "err", err)
-	}
-
-	if _, err := runCommandInContainer(cl, containerName, os.Stdout, types.ExecConfig{
-		User:         "root",
-		AttachStderr: true,
-		AttachStdout: true,
-		Detach:       false,
-		Env:          []string{"SC=/home/scion/go/src/github.com/scionproto/scion"},
-		Cmd:          []string{"sh", "gen/install_apps.sh"},
-	}); err != nil {
-		log.Error("Running command in container", "err", err)
-	}
-
 }
 
 // handleNetwork checks if the user specified another network to use other than the docker
@@ -1088,12 +1081,12 @@ func runCommandInContainer(cli *client.Client, containerName string, writer io.W
 
 	idResponse, err := cli.ContainerExecCreate(context.Background(), containerName, execConfig)
 	if err != nil {
-		return "", common.NewBasicError("Creating docker exec command", err, "container", containerName)
+		return "", common.NewBasicError("Creating docker exec command", err, "containerName", containerName)
 	}
 
 	hijackedResponse, err := cli.ContainerExecAttach(context.Background(), idResponse.ID, types.ExecStartCheck{})
 	if err != nil {
-		return "", common.NewBasicError("Running command in container", err, "container", containerName)
+		return "", common.NewBasicError("Running command in container", err, "containerName", containerName)
 	}
 	defer hijackedResponse.Close()
 

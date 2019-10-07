@@ -1,7 +1,7 @@
 # This file is a sample measurements configuration file, which can be passed to the tool to
 # tell it which measurements to take on all links while running an experiment
 
-bandwidth: false
+bandwidth: true
 latency: true
 # Path switching looks for an AS with two paths or more from the host machine's AS, then
 # start retrieving paths to the that AS continuously throughout the experiment.

@@ -394,7 +394,9 @@ func (c *Collector) singleBandwidthMeasurement(f os.File, link conf.Link, wg *sy
 	for !c.getStop() {
 		dstAddress := fmt.Sprintf("%s,[127.0.0.1]:40002", link.ASB)
 
+		// TODO fix findMax bandwidth then use here later
 		var args []string
+		//args = []string{"-s", dstAddress, "-findMax", "-cs", "128kbps"}
 		if link.Properties.Rate != "" { // if the rate is set for the link, then set the bandwidth to try to
 			// double the set bandwidth rate
 			newRate, err := setBandwidth(link.Properties.Rate)
@@ -414,19 +416,8 @@ func (c *Collector) singleBandwidthMeasurement(f os.File, link conf.Link, wg *sy
 				args[1] = fmt.Sprintf("%s,[10.0.8.1]:30100", link.ASB)
 			}
 
-			// Let us know if a measurement is taking too long
-			timer := time.NewTimer(time.Minute)
-			go func() {
-				<-timer.C
-				log.Warn("Single bandwidth measurement been running for longer than a minute!",
-					"link", link.ASA+"_"+link.ASB)
-				// TODO handle the situation by terminating the process or returning from the caller
-				//  function if the bwtesterclient locks
-			}()
 			bwtestClientPath := filepath.Join(os.Getenv("GOPATH"), "bin", "bwtestclient")
-			// #nosec
 			_ = runCmdLocally(bwtestClientPath, args, &f)
-			timer.Stop()
 		} else {
 			cmd := append([]string{"/home/scion/go/bin/bwtestclient"}, args...)
 			containerName := strings.Replace(link.ASA, ":", "_", -1)
@@ -442,7 +433,7 @@ func (c *Collector) singleBandwidthMeasurement(f os.File, link conf.Link, wg *sy
 	}
 }
 
-// TODO change later to find maxBandwidth instead when it is merged
+// TODO change later to find maxBandwidth instead when it is fixed
 func setBandwidth(rate string) (string, error) {
 	rateStr := regexp.MustCompile(`\d+`).FindString(rate)
 	newRate, err := strconv.ParseUint(rateStr, 10, 64)
@@ -463,15 +454,6 @@ func (c *Collector) killRunningProcesses() {
 		if err := exec.Command("pkill", p).Run(); err != nil {
 			log.Error("killing process", "process name", p, "err", err)
 		}
-	}
-
-	if c.measurements.Bandwidth {
-		// TODO check first if BR is still hogging the CPU because of bwtester
-		out, err := exec.Command("pkill", "-SIGTERM", "border").Output()
-		if err != nil {
-			log.Error("Sending SIGTERM to Border router", "err", err)
-		}
-		log.Trace("Killed BR with SIGTERM", "output", string(out))
 	}
 }
 
