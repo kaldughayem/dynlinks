@@ -60,13 +60,13 @@ func Run(topoFile, outputLinks string, installSCIONApps bool) {
 	// Create a new docker API cl with version 1.39 (maximum supported version)
 	cl, err := client.NewClientWithOpts(client.WithVersion("1.39"))
 	if err != nil {
-		log.Crit("Getting docker API client", "err", err)
+		log.Crit("Making docker API client", "err", err)
 		os.Exit(1)
 	}
 
 	// Make checks
 	if err := check(topoConfig, cl); err != nil {
-		log.Crit("Making basic checks", "err", err)
+		log.Crit("Basic checks failed", "err", err)
 		os.Exit(1)
 	}
 	// Set the gen directories
@@ -100,14 +100,14 @@ func Run(topoFile, outputLinks string, installSCIONApps bool) {
 		os.Exit(1)
 	}
 
-	log.Info("checking and generating TLS certificates...")
+	log.Info("Checking TLS certificates...")
 	if err := generateCerts(topoConfig); err != nil {
 		log.Crit("Unable to generate certificates for containers in 'gen-certs' dir", "err", err)
 	}
-	// restart all SCION services
+
 	startNewTopology(cl, topoConfig.ASes)
 
-	log.Info("New topology started successfully")
+	log.Info("New topology created")
 
 	if outputLinks != "" {
 		log.Info("Generating empty links' properties file...")
@@ -194,29 +194,20 @@ func generateCerts(config *conf.TopoConfig) error {
 // copies the binaries to other containers, and restarts SCION on all containers and the host machine
 func startNewTopology(cl *client.Client, asMap conf.ASMap) {
 	log.Info("Restarting the SCION services...")
-	// restart SCION services on the local host
-	cmd := exec.Command("./scion.sh", "stop")
-	cmd.Dir = os.Getenv("SC")
-	if err := cmd.Run(); err != nil {
-		log.Error("Stopping SCION on host", "err", err)
-	}
-	cmd = exec.Command("supervisor/supervisor.sh", "reload")
-	cmd.Dir = os.Getenv("SC")
-	if err := cmd.Run(); err != nil {
-		log.Error("Reloading supervisor on host", "err", err)
-	}
-	cmd = exec.Command("./scion.sh", "start", "nobuild")
-	cmd.Dir = os.Getenv("SC")
-	if err := cmd.Run(); err != nil {
-		log.Error("Starting SCION on host", "err", err)
-	}
 
 	for as, info := range asMap {
 		if info.Info.AP {
+			// Restart the services of the AP by sending a SIGHUP to that AS's SCION services
+			services := []string{"border", "path_srv", "beacon_srv", "cert_srv", "godispatcher", "sciond"}
+			for _, svc := range services {
+				if _, err := exec.Command("pkill", "-SIGHUP", "-f", svc).Output(); err != nil {
+					log.Error("Sending SIGHUP to service", "svc", svc, "err", err)
+				}
+			}
 			continue
 		}
-		containerName := strings.Replace(as, ":", "_", -1)
 
+		containerName := strings.Replace(as, ":", "_", -1)
 		output, err := runCommandInContainer(cl, containerName, nil, types.ExecConfig{
 			User:         "scion",
 			AttachStderr: true,
@@ -636,8 +627,10 @@ func loadTopologies(asMap conf.ASMap) error {
 // installApps builds SCION apps' binaries on the host machine first (if it is not built), then
 // copies the binaries to each of the containers (if the binaries do not exist in the container).
 //
-// This needs to be changed later, because is the operating system of the host machine is not ubuntu16.04
-// most likely will not work. However, this is a temporary solution for the problem.
+// TODO build in container and move to other containers
+// This needs to be changed later, because if the operating system of the host machine is not ubuntu16.04
+// (which is the docker.sh base image) most likely will not work. However, this is a temporary
+// solution for the problem for now.
 func installApps(cl *client.Client, asMap conf.ASMap) {
 	appsPath := filepath.Join(os.Getenv("GOPATH"), "bin")
 
