@@ -65,7 +65,7 @@ The tool can be used to create a new topology by running the following command (
 ./dynlinks -config TOPO.YAML -buildApps -o EMPTY_PROPERTIES.YAML
 ```
 The `-config` option is used to specify the topology configuration to use, the configuration follows the same structure as [SCION's local topology files](https://github.com/scionproto/scion/tree/master/topology).
-An example with comments can be seen in the [example.topo](example.topo) file.
+An example with comments can be seen in the [example-topo.yml](example-topo.yml) file.
  The `-buildApps` flag is used to tell the tool to build the SCION apps inside the containers.
 `-o` tells the tool to output an empty links properties file after creating the topology so it can be used later to modify links. 
 
@@ -74,7 +74,7 @@ The user can set the properties of links in the topology interactively by runnin
 ```bash
 ./dynlinks exp -gen /path/to/gen_dirs -i
 ```
-The `-gen` option is to pass to the tool the location where the gen directories mounted by the containers are mounted (more information in the [example.topo](example.topo) file). 
+The `-gen` option is to pass to the tool the location where the gen directories mounted by the containers are mounted (more information in the [example-topo.yml](example-topo.yml) file). 
 
 To run the tool using a properties file:
 ```bash
