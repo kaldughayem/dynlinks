@@ -509,16 +509,16 @@ func addInterface(link conf.TopoLink, asMap conf.ASMap, networkMTUStr string) er
 // setInterfaceProperties checks an interface and sets its bandwidth, MTU, and overlay type.
 func setInterfaceProperties(link *conf.TopoLink, networkMTU int) error {
 	if link.MTU == 0 {
-		link.MTU = networkMTU - 42
+		link.MTU = networkMTU - 28
 	}
 
 	if link.MTU > networkMTU-42 {
-		if promptUser("link MTU set higher than network MTU (minus Ethernet, IPv4, and UDP headers is " +
-			" 42 Bytes), set to max virtual interface MTU " + string(networkMTU-42) + "?") {
-			log.Info("Setting MTU to max MTU ", networkMTU-42)
-			link.MTU = networkMTU - 42
+		if promptUser("link MTU set higher than network MTU (minus IPv4 and UDP headers is  28 Bytes), " +
+			"set to max virtual interface MTU " + string(networkMTU-28) + "?") {
+			log.Info("Setting MTU to max MTU ", networkMTU-28)
+			link.MTU = networkMTU - 28
 		}
-		log.Info("Using Specified MTU")
+		log.Debug("Using Specified MTU")
 	}
 	if link.Bandwidth == 0 {
 		link.Bandwidth = defaultBandwidth
